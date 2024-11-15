@@ -1,11 +1,19 @@
 import json
-from fastapi import FastAPI, Header, HTTPException
+from typing import Optional
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.security import OAuth2PasswordBearer
+import jwt
+from pydantic import BaseModel
 from auth import router as auth_router
-from jwt_utils import verify_token
+from jwt_utils import ALGORITHM, SECRET_KEY, verify_token
 import pandas as pd
 import mysql.connector
 from mysql.connector import Error
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime 
+import locale
+from user import router as user_router
+
 # Create the main FastAPI app
 app = FastAPI()
 app.add_middleware(
@@ -18,6 +26,9 @@ app.add_middleware(
 
 # Include authentication routes under '/auth' to avoid conflicts
 app.include_router(auth_router, prefix="/auth")
+
+# Ajouter les routes user
+app.include_router(user_router, prefix="/user", tags=["User"])
 
 # Function to connect to MySQL
 def get_db_connection():
@@ -33,6 +44,7 @@ def get_db_connection():
     except Error as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Database connection error")
+    
 
 # Function to create necessary tables
 def create_tables_if_not_exists():
@@ -45,7 +57,10 @@ def create_tables_if_not_exists():
         id INT AUTO_INCREMENT PRIMARY KEY,
         password_hash VARCHAR(255) NOT NULL,
         email VARCHAR(255) NOT NULL UNIQUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        username VARCHAR(255),
+        phone INT (255),
+        image BLOB
     )
     """
     create_monitoring_table = """
@@ -78,6 +93,9 @@ query1 = """
     SELECT UDATE, TIME, ISS_INST, ACQ_INST, TERMINAL_TYPE, RESP, TRANSX_NUMBER
     FROM transactions_hist1
 """
+
+# Set the locale to French for month names
+locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8') 
 
 # Function to load data into a DataFrame
 def load_data():
@@ -129,7 +147,6 @@ def load_data1():
 
     return df
 
-
 # Transactions route (no conflict now)
 @app.get("/transactions/")
 def get_transactions(authorization: str = Header(None)):
@@ -174,6 +191,26 @@ def get_kpis(authorization: str = Header(None)):
     response_distribution = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['RESP'].value_counts()
     most_frequent_refusal_code = response_distribution.idxmax()
     most_frequent_refusal_count = response_distribution.max()
+    # Convert 'UDATE' to string in the format 'YYYYMMDD'
+    df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
+
+    # Convert 'TIME' from Timedelta to string format 'HHMMSS'
+    df['TIME'] = df['TIME'].apply(lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" if pd.notnull(x) else '000000')
+
+    # Concatenate and parse to datetime
+    first_date_time = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce').min()
+    # Format the datetime
+    if pd.notnull(first_date_time):
+        formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        formatted_datetime = 'N/A'
+    # Calculate critical code rates
+    critical_codes = [802, 803, 910]
+    critical_code_rates = {
+        f"rate_of_code_{code}": round((df['RESP'] == code).sum() / total_transactions * 100, 2)
+        for code in critical_codes
+    }
+
  
     return {
         "total_transactions": int(total_transactions),
@@ -182,7 +219,11 @@ def get_kpis(authorization: str = Header(None)):
         "refused_transactions": int(refused_transactions),
         "refusal_rate": round(refusal_rate, 2),
         "most_frequent_refusal_code": int(most_frequent_refusal_code),
-        "most_frequent_refusal_count": int(most_frequent_refusal_count)
+        "most_frequent_refusal_count": int(most_frequent_refusal_count),
+        "latest_update": formatted_datetime, # Added field
+        **critical_code_rates  # Add critical code rates dynamically
+
+
     }
 
 @app.get("/kpis_hist/")
@@ -200,10 +241,21 @@ def get_kpis(authorization: str = Header(None)):
     success_rate = (successful_transactions / total_transactions) * 100
     refused_transactions = len(df[df['RESP'] != -1])
     refusal_rate = (refused_transactions / total_transactions) * 100
- 
-    response_distribution = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['RESP'].value_counts()
-    most_frequent_refusal_code = response_distribution.idxmax()
-    most_frequent_refusal_count = response_distribution.max()
+
+     # Convert 'UDATE' to string in the format 'YYYYMMDD'
+    df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
+
+    # Convert 'TIME' from Timedelta to string format 'HHMMSS'
+    df['TIME'] = df['TIME'].apply(lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" if pd.notnull(x) else '000000')
+
+    # Concatenate and parse to datetime
+    first_date_time = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce').min()
+    # Format the datetime
+    if pd.notnull(first_date_time):
+        formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        formatted_datetime = 'N/A'
+
  
     return {
         "total_transactions": int(total_transactions),
@@ -211,6 +263,7 @@ def get_kpis(authorization: str = Header(None)):
         "success_rate": round(success_rate, 2),
         "refused_transactions": int(refused_transactions),
         "refusal_rate": round(refusal_rate, 2),
+        "latest_update": formatted_datetime
     }
  
  
@@ -225,7 +278,22 @@ def get_terminal_distribution(authorization: str = Header(None)):
  
     df = load_data()
     terminal_distribution = df['TERMINAL_TYPE'].value_counts().to_dict()
-    return {"terminal_distribution": terminal_distribution}
+     # Convert 'UDATE' to string in the format 'YYYYMMDD'
+    df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
+
+    # Convert 'TIME' from Timedelta to string format 'HHMMSS'
+    df['TIME'] = df['TIME'].apply(lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" if pd.notnull(x) else '000000')
+
+    # Concatenate and parse to datetime
+    first_date_time = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce').min()
+    # Format the datetime
+    if pd.notnull(first_date_time):
+        formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        formatted_datetime = 'N/A'
+
+    return {"terminal_distribution": terminal_distribution,
+            "latest_update": formatted_datetime}
  
 # Protected route: Get refusal rate per issuer
 @app.get("/refusal_rate_per_issuer/")
@@ -359,4 +427,7 @@ def get_transaction_trends(authorization: str = Header(None)):
 # Run the FastAPI server
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+    #uvicorn.run(app, host="localhost", port=8000)
+
+

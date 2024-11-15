@@ -1,7 +1,10 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from typing import Optional
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.security import OAuth2PasswordBearer
+import jwt
+from pydantic import BaseModel, EmailStr
 import bcrypt
-from jwt_utils import create_access_token
+from jwt_utils import ALGORITHM, SECRET_KEY, create_access_token
 import mysql.connector
 from mysql.connector import Error
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +26,7 @@ def get_db_connection():
         raise HTTPException(status_code=500, detail="Database connection error")
 
 class User(BaseModel):
-    email: str
+    email: str  # For identifying the user
     password: str
 
 # Hash password
@@ -82,5 +85,4 @@ def sign_in(user: User):
     if db_user and verify_password(user.password, db_user["password_hash"]):
         token = create_access_token(data={"sub": user.email})
         return {"access_token": token, "token_type": "bearer"}
-    
     raise HTTPException(status_code=401, detail="Invalid email or password")
