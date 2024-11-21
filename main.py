@@ -1,9 +1,7 @@
 import json
 from typing import Optional
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.security import OAuth2PasswordBearer
-import jwt
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 from auth import router as auth_router
 from jwt_utils import ALGORITHM, SECRET_KEY, verify_token
 import pandas as pd
@@ -18,10 +16,10 @@ from user import router as user_router
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can specify allowed origins, e.g., ["http://localhost:3000"]
+    allow_origins=["*"],  # Permettre toutes les origines (à limiter en production)
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include authentication routes under '/auth' to avoid conflicts
@@ -146,6 +144,7 @@ def load_data1():
     df.replace([float('inf'), float('-inf')], None, inplace=True)
 
     return df
+
 
 # Transactions route (no conflict now)
 @app.get("/transactions/")

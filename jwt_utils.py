@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import HTTPException
 SECRET_KEY = "DWbOlgjB9bJUQRjJ2LXRZTgCTSM_ev5JkorpVlFWz8w"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 180
 
 
 # Function to create JWT token
