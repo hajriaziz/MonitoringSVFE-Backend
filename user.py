@@ -4,7 +4,6 @@ import os
 from fastapi import APIRouter, File, Form, HTTPException, Depends, Header, UploadFile
 from typing import Optional
 from fastapi.responses import JSONResponse
-import mysql.connector
 from pydantic import BaseModel
 from auth import get_db_connection
 from jwt_utils import verify_token
@@ -23,7 +22,7 @@ if not os.path.exists(UPLOAD_DIRECTORY):
     os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
 
 # Récupérer les informations de l'utilisateur
-@router.get("/user/me")
+@router.get("/user/me", response_model=UserResponse)
 def get_user(Authorization: str = Header(...)):
     if not Authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid token format")
@@ -36,16 +35,21 @@ def get_user(Authorization: str = Header(...)):
 
     conn = get_db_connection()
     try:
-        cursor = conn.cursor(dictionary=True)
-        select_query = "SELECT email, username, phone, image FROM user WHERE email = %s"
+        cursor = conn.cursor()
+        select_query = "SELECT email, username, phone, image FROM Users WHERE email = ?"
         cursor.execute(select_query, (email,))
-        user = cursor.fetchone()
+        row = cursor.fetchone()
 
-        if not user:
+        if not row:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Convert phone to string if it's an integer
-        user['phone'] = str(user['phone']) if user['phone'] else None
+        # Map SQL row to dictionary
+        user = {
+            "email": row[0],
+            "username": row[1],
+            "phone": row[2],
+            "image": row[3]
+        }
 
         # Convert relative image path to base64
         if user['image']:
@@ -59,17 +63,19 @@ def get_user(Authorization: str = Header(...)):
                 user['image'] = None  # Handle missing files gracefully
 
         return user
-    except mysql.connector.Error:
-        raise HTTPException(status_code=500, detail="Database error occurred")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
-        conn.close()
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 # Mise à jour des informations de l'utilisateur avec un fichier image
 @router.put("/update_user/me")
 async def update_user_me(
     username: Optional[str] = Form(None),
-    phone: Optional[int] = Form(None),
+    phone: Optional[str] = Form(None),  # Adjusted to string
     file: Optional[UploadFile] = File(None),
     Authorization: str = Header(...),
 ):
@@ -102,22 +108,21 @@ async def update_user_me(
 
             # Normalize and save the relative path
             relative_path = os.path.relpath(file_path, ".").replace("\\", "/")
-            update_fields.append("image = %s")
+            update_fields.append("image = ?")
             values.append(relative_path)
             
-
         # Update username and phone
         if username:
-            update_fields.append("username = %s")
+            update_fields.append("username = ?")
             values.append(username)
         if phone:
-            update_fields.append("phone = %s")
+            update_fields.append("phone = ?")
             values.append(phone)
 
         if not update_fields:
             raise HTTPException(status_code=400, detail="No data provided for update")
 
-        update_query = f"UPDATE user SET {', '.join(update_fields)} WHERE email = %s"
+        update_query = f"UPDATE Users SET {', '.join(update_fields)} WHERE email = ?"
         values.append(email)
 
         cursor.execute(update_query, tuple(values))
@@ -127,9 +132,11 @@ async def update_user_me(
             raise HTTPException(status_code=404, detail="User not found or no changes made")
 
         return {"msg": "User updated successfully", "image": relative_path if file else None}
-    except mysql.connector.Error:
+    except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail="Database error occurred")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
-        conn.close()
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if conn:
+            conn.close()

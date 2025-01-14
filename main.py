@@ -1,4 +1,5 @@
 import asyncio
+import pyodbc
 from contextlib import asynccontextmanager
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -52,38 +53,42 @@ app.include_router(user_router, prefix="/user", tags=["User"])
 # Function to connect to MySQL
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(
-            host="localhost",          
-            database="monitoringsvfe",        
-            user="root",      
-            password=""   
+        conn = pyodbc.connect(
+            'DRIVER={ODBC Driver 17 for SQL Server};'
+            'SERVER=172.17.235.170;'  # Replace with your SQL Server name or IP
+            'DATABASE=SMT_MONITORING;'
+            'UID=SMT_SVMRLogin;'
+            'PWD=Monetique2026*;'
         )
-        if conn.is_connected():
-            return conn
-    except Error as e:
-        print(f"Error: {e}")
+        return conn
+    except pyodbc.DatabaseError as e:
+        print(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection error")
+
     
 
 # Function to create necessary tables
 def create_tables_if_not_exists():
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # Create 'user' and 'transactions' tables
+    
+    # SQL Server-friendly CREATE TABLE statements
     create_user_table = """
-    CREATE TABLE IF NOT EXISTS user (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='user' AND xtype='U')
+    CREATE TABLE user (
+        id INT IDENTITY(1,1) PRIMARY KEY,
         password_hash VARCHAR(255) NOT NULL,
         email VARCHAR(255) NOT NULL UNIQUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at DATETIME DEFAULT GETDATE(),
         username VARCHAR(255),
-        phone INT (255),
-        image BLOB
+        phone BIGINT,
+        image VARBINARY(MAX)
     )
     """
+    
     create_monitoring_table = """
-    CREATE TABLE IF NOT EXISTS transactions (
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='transactions' AND xtype='U')
+    CREATE TABLE transactions (
         UDATE DATE,
         TIME TIME,
         ISS_INST VARCHAR(255),
@@ -93,32 +98,33 @@ def create_tables_if_not_exists():
         TRANSX_NUMBER INT
     )
     """
+    
     create_alerts_table = """
-    CREATE TABLE IF NOT EXISTS alerts (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    message VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-"""
-    cursor.execute(create_alerts_table)
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='alerts' AND xtype='U')
+    CREATE TABLE alerts (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        message VARCHAR(255) NOT NULL,
+        created_at DATETIME DEFAULT GETDATE()
+    )
+    """
+    
     cursor.execute(create_user_table)
     cursor.execute(create_monitoring_table)
-
+    cursor.execute(create_alerts_table)
+    
     conn.commit()
     cursor.close()
     conn.close()
 
-# Ensure tables are created
-create_tables_if_not_exists()
 
 # Example query to load data from 'transactions' table
 query = """
     SELECT UDATE, TIME, ISS_INST, ACQ_INST, TERMINAL_TYPE, RESP, TRANSX_NUMBER
-    FROM transactions
+    FROM SVISTA_Monitoring
 """
 query1 = """
     SELECT UDATE, TIME, ISS_INST, ACQ_INST, TERMINAL_TYPE, RESP, TRANSX_NUMBER
-    FROM transactions_hist1
+    FROM SVISTA_Monitoring_Hist
 """
 
 # Set the locale to French for month names
@@ -130,19 +136,30 @@ def load_data():
     cursor = conn.cursor()
     cursor.execute(query)
     rows = cursor.fetchall()
-    
+
     # Create a DataFrame from the rows
-    df = pd.DataFrame(rows, columns=[col[0] for col in cursor.description])
+    df = pd.DataFrame([tuple(row) for row in rows], columns=[col[0] for col in cursor.description])
     cursor.close()
     conn.close()
 
     # Data processing steps
     df['RESP'] = pd.to_numeric(df['RESP'], errors='coerce')
-    df['DATETIME'] = pd.to_datetime(
-    df['UDATE'].astype(str) + df['TIME'].astype(str),
-    format='%Y%m%d:%H%M%S',
-    errors='coerce'
+
+    # Ensure 'TIME' is formatted as HHMMSS (e.g., '153045' for 15:30:45)
+    df['TIME'] = df['TIME'].astype(str).str.zfill(6)  # Ensures consistent 6-character format
+
+    # Convert 'TIME' to a timedelta for further processing
+    df['TIME'] = pd.to_timedelta(
+        df['TIME'].str[:2] + ':' + df['TIME'].str[2:4] + ':' + df['TIME'].str[4:],
+        errors='coerce'
     )
+
+    df['DATETIME'] = pd.to_datetime(
+        df['UDATE'].astype(str),
+        format='%Y%m%d',
+        errors='coerce'
+    ) + df['TIME']
+
     df['SUCCESS'] = df['RESP'].apply(lambda x: 1 if x in [-1, 0] else 0)
     return df
 
@@ -153,25 +170,29 @@ def load_data1():
     rows = cursor.fetchall()
 
     # Create a DataFrame from the rows
-    df = pd.DataFrame(rows, columns=[col[0] for col in cursor.description])
+    df = pd.DataFrame([tuple(row) for row in rows], columns=[col[0] for col in cursor.description])
     cursor.close()
     conn.close()
 
     # Data processing steps
     df['RESP'] = pd.to_numeric(df['RESP'], errors='coerce')
-    df['DATETIME'] = pd.to_datetime(
-        df['UDATE'].astype(str) + df['TIME'].astype(str),
-        format='%Y%m%d:%H%M%S',
+
+    # Ensure 'TIME' is formatted as HHMMSS (e.g., '153045' for 15:30:45)
+    df['TIME'] = df['TIME'].astype(str).str.zfill(6)  # Ensures consistent 6-character format
+
+    # Convert 'TIME' to a timedelta for further processing
+    df['TIME'] = pd.to_timedelta(
+        df['TIME'].str[:2] + ':' + df['TIME'].str[2:4] + ':' + df['TIME'].str[4:],
         errors='coerce'
     )
+
+    df['DATETIME'] = pd.to_datetime(
+        df['UDATE'].astype(str),
+        format='%Y%m%d',
+        errors='coerce'
+    ) + df['TIME']
+
     df['SUCCESS'] = df['RESP'].apply(lambda x: 1 if x in [-1, 0] else 0)
-
-    # Handle NaN values by filling them with None (JSON-compliant)
-    df.fillna(value=pd.NA, inplace=True)
-    
-    # Optionally, you can also handle infinite values like so:
-    df.replace([float('inf'), float('-inf')], None, inplace=True)
-
     return df
 
 
@@ -187,7 +208,7 @@ def send_email_alert(body):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT email FROM user")
+        cursor.execute("SELECT email FROM Users")
         users = cursor.fetchall()
         cursor.close()
         conn.close()
@@ -221,54 +242,115 @@ def send_email_alert(body):
         print(f"Erreur lors de la récupération des emails : {e}")
 
 
-
-
 async def check_and_send_alerts():
-    print("Check and send alerts is running...")
-    try:
+     print("Check and send alerts is running...")
+     try:
         # Charger les données pour vérifier les KPIs
-        df = load_data()
+         df = load_data()
+ 
+         total_transactions = len(df)
+         successful_transactions = df['SUCCESS'].sum()
+         success_rate = (successful_transactions / total_transactions) * 100
+         refused_transactions = len(df[df['RESP'] != -1])
+         refusal_rate = (refused_transactions / total_transactions) * 100
+ 
+         response_distribution = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['RESP'].value_counts()
+         most_frequent_refusal_code = response_distribution.idxmax() if not response_distribution.empty else None
+         most_frequent_refusal_count = response_distribution.max() if not response_distribution.empty else 0
+ 
+         # Vérification des alertes
+         critical_response_codes = [802, 803, 910, 915]
+ 
+         if success_rate < 75:
+             message = f"Alerte Critique: Le taux de reussite est tombe a {success_rate:.2f}%!"
+             #await manager.broadcast(message)
+             log_alert(message)
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+ 
+ 
+         if refusal_rate > 35:
+             message = f"Alerte: Le taux de refus est eleve a {refusal_rate:.2f}%!"
+             #await manager.broadcast(message)
+             log_alert(message)
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+ 
+         if most_frequent_refusal_code in critical_response_codes:
+             message = (
+                 f"Alerte Critique: Code de refus frequent {most_frequent_refusal_code} "
+                 f"avec {most_frequent_refusal_count} occurrences!"
+             )
+             #await manager.broadcast(message)
+             log_alert(message)
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+ 
+             # Vérification des taux de refus par émetteur
+         total_per_issuer = df['ISS_INST'].value_counts()
+         refused_per_issuer = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['ISS_INST'].value_counts()
+ 
+         refusal_rate_per_issuer = (refused_per_issuer / total_per_issuer * 100).fillna(0).round(2).to_dict()
+ 
+         # Dictionnaire pour mapper les codes des banques avec leurs noms
+         bank_names = {
+             103: "BNA", 105: "BT", 110: "STB", 9110: "STBNet", 9108: "BIAT", 125: "ZITOUNA",
+             132: "ALBARAKA", 150: "BCT", 9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI",
+             9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK", 9121: "STUSID", 123: "QNB",
+             9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB",
+            173: "TIB", 140: "ABCI", 141: "BDL", 112: "UIB", 142: "BEA", 144: "BBA", 148: "BARKAA",
+             149: "SGA", 143: "LIB", 177: "BNAlgrie", 178: "SALAMB", 9996: "AMEXGA", 9995: "VISASMSGA",
+             9944: "MCSMSGA", 9997: "VISAGA", 9990: "BCD", 9992: "MCGA", 9968: "9968", 9145: "9145",
+             198: "198",
+         }
+ 
+         # Liste des banques avec un taux de refus inférieur à 70 %
+         banks_below_threshold = [
+             f"{bank_names.get(int(float(issuer_code)), f'Code inconnu ({issuer_code})')} ({rate:.2f}%)"
+             for issuer_code, rate in refusal_rate_per_issuer.items() if rate > 70
+         ]
+ 
+         if banks_below_threshold:
+             message = (
+                 "Alerte: Les banques emettrices suivantes ont un taux de refus superieur à 70% :\n"
+                 + "\n".join(banks_below_threshold)
+             )
+             log_alert(message)
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
 
-        total_transactions = len(df)
-        successful_transactions = df['SUCCESS'].sum()
-        success_rate = (successful_transactions / total_transactions) * 100
-        refused_transactions = len(df[df['RESP'] != -1])
-        refusal_rate = (refused_transactions / total_transactions) * 100
-
-        response_distribution = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['RESP'].value_counts()
-        most_frequent_refusal_code = response_distribution.idxmax() if not response_distribution.empty else None
-        most_frequent_refusal_count = response_distribution.max() if not response_distribution.empty else 0
-
-        # Vérification des alertes
-        critical_response_codes = [802, 803, 910, 915]
-
-        if success_rate < 70:
-            message = f"Alerte Critique: Le taux de reussite est tombe a {success_rate:.2f}%!"
-            #await manager.broadcast(message)
-            log_alert(message)
-            send_email_alert(f"{message}\n\n"
-                "Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
-
-
-        if refusal_rate > 35:
-            message = f"Alerte: Le taux de refus est eleve a {refusal_rate:.2f}%!"
-            #await manager.broadcast(message)
-            log_alert(message)
-
-        if most_frequent_refusal_code in critical_response_codes:
-            message = (
-                f"Alerte Critique: Code de refus frequent {most_frequent_refusal_code} "
-                f"avec {most_frequent_refusal_count} occurrences!"
-            )
-            #await manager.broadcast(message)
-            log_alert(message)
-
-    except Exception as e:
-        print(f"Erreur lors de la vérification des alertes : {e}")
+        # Vérification des taux de refus par canal
+         refusal_by_channel = df[df['RESP'] != -1].groupby('TERMINAL_TYPE').size().to_dict()
+         refusal_rate_by_channel = {
+                channel: round((refusals / total_transactions) * 100, 2)
+                for channel, refusals in refusal_by_channel.items()
+            }
+ 
+            # Ajouter une alerte spécifique pour DAB (Terminal "1")
+         #dab_refusal_rate = refusal_rate_by_channel.get(1, 0.0)
+         #if dab_refusal_rate > 30:
+                #message = f"Alerte Critique: Le taux de refus pour le canal DAB est très élevé ({dab_refusal_rate:.2f}%)!"
+                #log_alert(message)
+                # send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+                #print(message)
+                        # Dictionnaire pour mapper les canaux à leurs noms
+         channel_names = {
+            1: "DAB",
+            2: "TPE",
+            8: "E-Commerce"
+         }
+ 
+        # Vérification des taux de refus par canal et envoi d'alertes
+         for channel, rate in refusal_rate_by_channel.items():
+            if rate > 60:  # Seuil générique
+                channel_name = channel_names.get(channel, f"Canal inconnu ({channel})")
+                message = f"Alerte: Le taux de refus pour le canal {channel_name} est élevé ({rate:.2f}%)!"
+                log_alert(message)
+                # Envoyer l'alerte par email
+                send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+                print(message)
+ 
+     except Exception as e:
+         print(f"Erreur lors de la vérification des alertes : {e}")
 
 
 # Function to schedule the async job
-# This is how to add async jobs properly in an async context
 async def schedule_async_job():
     if not scheduler.get_jobs():
         scheduler.add_job(check_and_send_alerts, 'interval', minutes=1)
@@ -279,7 +361,7 @@ def log_alert(message):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO alerts (message) VALUES (%s)", (message,))
+        cursor.execute("INSERT INTO Alerts (message) VALUES (?)", (message,))
         conn.commit()
         # Diffuser l'alerte via WebSocket
         asyncio.create_task(manager.broadcast(message))
@@ -289,32 +371,6 @@ def log_alert(message):
 
     except Error as e:
         print(f"Erreur lors de l'enregistrement de l'alerte : {e}")
-
-# Simuler une tâche périodique
-def task_to_check_and_notify():
-    print(f"Vérification effectuée à {datetime.now()}")
-
-    # Simulation d'une alerte à envoyer
-    message = {
-        "type": "alerte",
-        "time": str(datetime.now()),
-        "details": "Un événement critique a été détecté.",
-    }
-
-    # Envoi via WebSocket
-    asyncio.run(send_notification(message))
-
-    async def send_notification(message: dict):
-        async with WebSocket("ws://localhost:8000/ws/notifications") as websocket:
-            await websocket.send_json(message)
-
-    # Ajouter la tâche au planificateur
-    scheduler.every(1).minutes.do(task_to_check_and_notify)
-
-    # Boucle pour exécuter les tâches planifiées
-    while True:
-        scheduler.run_pending()
-        time.sleep(1)
 
 @app.get("/alerts/")
 def get_alerts(limit: int = 10, authorization: str = Header(None)):
@@ -398,7 +454,7 @@ def get_kpis(authorization: str = Header(None)):
     else:
         formatted_datetime = 'N/A'
     # Calculate critical code rates
-    critical_codes = [802, 803, 840]
+    critical_codes = [802, 803, 801, 840]
     critical_code_rates = {
         f"rate_of_code_{code}": round((df['RESP'] == code).sum() / total_transactions * 100, 2)
         for code in critical_codes
@@ -470,23 +526,30 @@ def get_terminal_distribution(authorization: str = Header(None)):
     verify_token(token)
  
     df = load_data()
+ 
+    # Calcul de la distribution des terminaux
     terminal_distribution = df['TERMINAL_TYPE'].value_counts().to_dict()
-     # Convert 'UDATE' to string in the format 'YYYYMMDD'
+ 
+    # Conversion de 'UDATE' et 'TIME' en datetime
     df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
-
-    # Convert 'TIME' from Timedelta to string format 'HHMMSS'
     df['TIME'] = df['TIME'].apply(lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" if pd.notnull(x) else '000000')
-
-    # Concatenate and parse to datetime
+ 
     first_date_time = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce').min()
-    # Format the datetime
-    if pd.notnull(first_date_time):
-        formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S')
-    else:
-        formatted_datetime = 'N/A'
-
-    return {"terminal_distribution": terminal_distribution,
-            "latest_update": formatted_datetime}
+    formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(first_date_time) else 'N/A'
+ 
+    # Calcul des taux de refus par canal
+    total_transactions = len(df)
+    refusal_by_channel = df[df['RESP'] != -1].groupby('TERMINAL_TYPE').size().to_dict()
+    refusal_rate_by_channel = {
+        channel: round((refusals / total_transactions) * 100, 2)
+        for channel, refusals in refusal_by_channel.items()
+    }
+ 
+    return {
+        "terminal_distribution": terminal_distribution,
+        "latest_update": formatted_datetime,
+        "refusal_rate_by_channel": refusal_rate_by_channel
+    }
  
 # Protected route: Get refusal rate per issuer
 @app.get("/refusal_rate_per_issuer/")
@@ -500,14 +563,25 @@ def get_refusal_rate_per_issuer(authorization: str = Header(None)):
     df = load_data()
     total_per_issuer = df['ISS_INST'].value_counts()
     refused_per_issuer = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['ISS_INST'].value_counts()
-
+ 
     # Calculer le taux de refus
     refusal_rate_per_issuer = (refused_per_issuer / total_per_issuer * 100).fillna(0).round(2).to_dict()
-
-    # Convertir les clés en entiers
-    refusal_rate_per_issuer = {int(float(key)): value for key, value in refusal_rate_per_issuer.items()}
-
-    return {"refusal_rate_per_issuer": refusal_rate_per_issuer}
+ 
+    # Dictionnaire pour mapper les codes des banques avec leurs noms
+    bank_names = {
+        103: "BNA",105: "BT",110: "STB",9110: "STBNet",9108: "BIAT",125: "ZITOUNA",132: "ALBARAKA",150:"BCT",9101:"ATB",9104:"ABT", 9107:"AmenB",9111:"UBCI",
+        9112:"UIB",9114:"BH",9117:"ONP",9120:"BTK",9121:"STUSID",123:"QNB",9124:"BTE",9126:"BTL",127:"BTS",9128:"ABC",133:"NAIB",147:"WIFAKB",173:"TIB",
+        140:"ABCI",141:"BDL",112:"UIB",142:"BEA",144:"BBA",148:"BARKAA",149:"SGA",143:"LIB",177:"BNAlgrie",178:"SALAMB",9996: "AMEXGA",9995: "VISASMSGA",9944: "MCSMSGA",
+        9997: "VISAGA",9990: "BCD",9992: "MCGA",9968: "9968",9145: "9145",198: "198",
+    }  
+ 
+    # Ajouter les noms des banques à la réponse
+    refusal_rate_with_names = {
+        bank_names.get(int(float(key)), f"Code inconnu ({key})"): value
+        for key, value in refusal_rate_per_issuer.items()
+    }
+ 
+    return {"refusal_rate_per_issuer": refusal_rate_with_names}
 
  
 # Protected route: Check system status
@@ -532,35 +606,31 @@ def get_transaction_trends(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
     
+    # Extract and verify token
     token = authorization.split(" ")[1]
     verify_token(token)
     
     # Load and process data
     df = load_data()
     
-    # Clean the TIME column to remove the "0 days" part
-    df['TIME'] = df['TIME'].astype(str).str.replace("0 days ", "", regex=False)
+    # Exemple de conversion correcte
+    df['UDATE'] = pd.to_datetime(df['UDATE'], format='%Y-%m-%d', errors='coerce')  # Adapter le format si nécessaire
+    df['TIME'] = pd.to_datetime(df['TIME'], format='%H:%M:%S', errors='coerce')  # Adapter le format si nécessaire
+
+    # Vérifier les valeurs non convertibles
+    if df['UDATE'].isnull().any() or df['TIME'].isnull().any():
+        print("Certaines valeurs n'ont pas pu être converties en datetime")
+
+    # Combiner les colonnes après conversion
+    df['formatted_date_time'] = df['UDATE'].dt.strftime('%Y-%m-%d') + ' ' + df['TIME'].dt.strftime('%H:%M:%S')
     
-    # Convert UDATE and TIME to a combined DATETIME column
-    df['DATETIME'] = pd.to_datetime(
-        df['UDATE'].astype(str) + ' ' + df['TIME'],
-        format='%Y-%m-%d %H:%M:%S',  # Adjusted format to match the cleaned data
-        errors='coerce'
-    )
-    
-    # Check for and drop rows with invalid DATETIME values
-    invalid_rows = df[df['DATETIME'].isnull()]
-    if not invalid_rows.empty:
-        print("Rows with invalid datetime values after cleaning:", invalid_rows)
-        df = df.dropna(subset=['DATETIME'])
-    
-    if df['DATETIME'].isnull().any():
-        raise ValueError("Some rows have invalid datetime values after handling.")
+    # Drop rows with invalid DATETIME
+    df = df.dropna(subset=['DATETIME'])
     
     # Extract time component for grouping
     df['TIME_ONLY'] = df['DATETIME'].dt.strftime('%H:%M')
-
-    # Group data by time and calculate success and refusal rates
+    
+    # Group data by time and calculate metrics
     time_success_rate = df.groupby('TIME_ONLY').agg(
         total_transactions=('SUCCESS', 'size'),
         successful_transactions=('SUCCESS', 'sum'),
@@ -570,10 +640,11 @@ def get_transaction_trends(authorization: str = Header(None)):
     time_success_rate['refusal_rate'] = (time_success_rate['refused_transactions'] / time_success_rate['total_transactions']) * 100
     time_success_rate = time_success_rate.reset_index()
     
-    # Convert DataFrame to list of dictionaries for JSON response
+    # Convert DataFrame to JSON response
     response_data = time_success_rate.to_dict(orient="records")
 
     return response_data
+
 
 @app.get("/transaction_trends_hist/")
 def get_transaction_trends(authorization: str = Header(None)):
@@ -583,45 +654,48 @@ def get_transaction_trends(authorization: str = Header(None)):
     token = authorization.split(" ")[1]
     verify_token(token)
     
-    # Load and process data
+    # Charger les données
     df = load_data1()
     
-    # Clean the TIME column to remove the "0 days" part
-    df['TIME'] = df['TIME'].astype(str).str.replace("0 days ", "", regex=False)
+    # Nettoyer la colonne TIME
+    df['TIME'] = df['TIME'].apply(lambda x: str(x) if pd.notna(x) else '')
+    df['TIME'] = df['TIME'].str.replace('0 days ', '', regex=False)
     
-    # Convert UDATE and TIME to a combined DATETIME column
-    df['DATETIME'] = pd.to_datetime(
-        df['UDATE'].astype(str) + ' ' + df['TIME'],
-        format='%Y-%m-%d %H:%M:%S',  # Adjusted format to match the cleaned data
-        errors='coerce'
-    )
+    # Reformater UDATE pour être au format 'YYYY-MM-DD'
+    df['UDATE'] = pd.to_datetime(df['UDATE'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
     
-    # Check for and drop rows with invalid DATETIME values
-    invalid_rows = df[df['DATETIME'].isnull()]
-    if not invalid_rows.empty:
-        print("Rows with invalid datetime values after cleaning:", invalid_rows)
-        df = df.dropna(subset=['DATETIME'])
+    # Combiner UDATE et TIME pour créer DATETIME
+    df['DATETIME'] = pd.to_datetime(df['UDATE'] + ' ' + df['TIME'], errors='coerce')
     
-    if df['DATETIME'].isnull().any():
-        raise ValueError("Some rows have invalid datetime values after handling.")
-    
-    # Extract time component for grouping
+    # Supprimer les lignes avec des DATETIME invalides
+    df = df.dropna(subset=['DATETIME'])
+
+    # Extraire uniquement l'heure et la minute pour le regroupement
     df['TIME_ONLY'] = df['DATETIME'].dt.strftime('%H:%M')
 
-    # Group data by time and calculate success and refusal rates
+    # Round to the nearest 30 minutes
+    df['TIME_ONLY'] = df['DATETIME'].dt.floor('30min').dt.strftime('%H:%M')
+    
+    # Regrouper les données par ces intervalles de 30 minutes et calculer les taux de succès et de refus
     time_success_rate = df.groupby('TIME_ONLY').agg(
         total_transactions=('SUCCESS', 'size'),
         successful_transactions=('SUCCESS', 'sum'),
         refused_transactions=('SUCCESS', lambda x: x.size - x.sum())
     )
+    
     time_success_rate['success_rate'] = (time_success_rate['successful_transactions'] / time_success_rate['total_transactions']) * 100
     time_success_rate['refusal_rate'] = (time_success_rate['refused_transactions'] / time_success_rate['total_transactions']) * 100
     time_success_rate = time_success_rate.reset_index()
     
-    # Convert DataFrame to list of dictionaries for JSON response
+    # Si le DataFrame est vide après traitement
+    if time_success_rate.empty:
+        raise HTTPException(status_code=404, detail="Aucune donnée valide trouvée pour les tendances des transactions.")
+    
+    # Convertir en format JSON pour la réponse
     response_data = time_success_rate.to_dict(orient="records")
 
     return response_data
+
 # Connection manager pour WebSocket
 class ConnectionManager:
     def __init__(self):

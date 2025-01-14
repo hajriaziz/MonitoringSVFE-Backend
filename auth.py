@@ -1,88 +1,86 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.security import OAuth2PasswordBearer
-import jwt
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 import bcrypt
-from jwt_utils import ALGORITHM, SECRET_KEY, create_access_token
-import mysql.connector
-from mysql.connector import Error
-from fastapi.middleware.cors import CORSMiddleware
+from jwt_utils import create_access_token
+import pyodbc
+
 router = APIRouter()
 
-# Database connection function
+# Configuration base de données
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(
-            host="localhost",          
-            database="monitoringsvfe",        
-            user="root",      
-            password=""   
+        conn = pyodbc.connect(
+            'DRIVER={ODBC Driver 17 for SQL Server};'
+            'SERVER=172.17.235.170;'
+            'DATABASE=SMT_MONITORING;'
+            'UID=SMT_SVMRLogin;'
+            'PWD=Monetique2026*;'
         )
-        if conn.is_connected():
-            return conn
-    except Error as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Database connection error")
+        return conn
+    except pyodbc.DatabaseError as e:
+        print(f"Erreur connexion base de données: {e}")
+        raise HTTPException(status_code=500, detail="Erreur connexion base de données")
 
 class User(BaseModel):
-    email: str  # For identifying the user
+    email: str
     password: str
 
-# Hash password
+# Hachage du mot de passe
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-# Verify password
+# Vérification du mot de passe
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
-# Function to add a user to the database
+# Ajout d'utilisateur
 def add_user_to_db(email: str, password: str):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         hashed_password = hash_password(password)
-        insert_query = "INSERT INTO user (email, password_hash) VALUES (%s, %s)"
+        insert_query = "INSERT INTO Users (email, password_hash) VALUES (?, ?)"
         cursor.execute(insert_query, (email, hashed_password))
-        conn.commit()  # Commit the transaction
-        print("User added to the database:", email)  # Debug print statement
-    except Error as e:
-        print("Error adding user to database:", e)
-        conn.rollback()  # Rollback in case of error
-        raise HTTPException(status_code=500, detail="Database error occurred")
+        conn.commit()
+    except pyodbc.Error as e:
+        print(f"Erreur ajout utilisateur: {e}")
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Erreur lors de l'ajout")
     finally:
         cursor.close()
         conn.close()
 
-# Function to retrieve a user from the database
+# Récupération d'utilisateur
 def get_user_from_db(email: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    select_query = "SELECT * FROM user WHERE email = %s"
-    cursor.execute(select_query, (email,))
-    user = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return user
+    try:
+        cursor = conn.cursor()
+        select_query = "SELECT * FROM Users WHERE email = ?"
+        cursor.execute(select_query, (email,))
+        row = cursor.fetchone()
+        if row:
+            columns = [column[0] for column in cursor.description]
+            return dict(zip(columns, row))
+        return None
+    finally:
+        cursor.close()
+        conn.close()
 
-# Sign-up route
+# Route Inscription
 @router.post("/signup/")
 def sign_up(user: User):
-    # Check if user already exists in the database
     existing_user = get_user_from_db(user.email)
     if existing_user:
-        raise HTTPException(status_code=400, detail="email already exists")
-
-    # Add new user to the database
+        raise HTTPException(status_code=400, detail="Cet email existe déjà.")
     add_user_to_db(user.email, user.password)
-    return {"msg": "User created successfully"}
+    return {"msg": "Utilisateur créé avec succès"}
 
-# Sign-in route to authenticate users and return JWT token
+# Route Connexion
 @router.post("/signin/")
 def sign_in(user: User):
     db_user = get_user_from_db(user.email)
     if db_user and verify_password(user.password, db_user["password_hash"]):
         token = create_access_token(data={"sub": user.email})
         return {"access_token": token, "token_type": "bearer"}
-    raise HTTPException(status_code=401, detail="Invalid email or password")
+    raise HTTPException(status_code=401, detail="Email ou mot de passe invalide")
