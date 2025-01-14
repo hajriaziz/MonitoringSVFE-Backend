@@ -11,7 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from auth import router as auth_router
 from jwt_utils import verify_token
 import pandas as pd
-import mysql.connector
 from mysql.connector import Error
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, time 
@@ -265,14 +264,14 @@ async def check_and_send_alerts():
              message = f"Alerte Critique: Le taux de reussite est tombe a {success_rate:.2f}%!"
              #await manager.broadcast(message)
              log_alert(message)
-             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
  
          if refusal_rate > 35:
              message = f"Alerte: Le taux de refus est eleve a {refusal_rate:.2f}%!"
              #await manager.broadcast(message)
              log_alert(message)
-             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
          if most_frequent_refusal_code in critical_response_codes:
              message = (
@@ -281,7 +280,7 @@ async def check_and_send_alerts():
              )
              #await manager.broadcast(message)
              log_alert(message)
-             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
              # Vérification des taux de refus par émetteur
          total_per_issuer = df['ISS_INST'].value_counts()
@@ -313,7 +312,7 @@ async def check_and_send_alerts():
                  + "\n".join(banks_below_threshold)
              )
              log_alert(message)
-             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
 
         # Vérification des taux de refus par canal
          refusal_by_channel = df[df['RESP'] != -1].groupby('TERMINAL_TYPE').size().to_dict()
@@ -353,7 +352,7 @@ async def check_and_send_alerts():
 # Function to schedule the async job
 async def schedule_async_job():
     if not scheduler.get_jobs():
-        scheduler.add_job(check_and_send_alerts, 'interval', minutes=1)
+        scheduler.add_job(check_and_send_alerts, 'interval', minutes=10)
     # Start the scheduler (it runs as part of the asyncio event loop)
     scheduler.start()
 
