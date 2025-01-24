@@ -15,6 +15,8 @@ class UserResponse(BaseModel):
     username: Optional[str]
     phone: Optional[str]
     image: Optional[str]  # URL to access the image
+    department: Optional[str]
+
 
 UPLOAD_DIRECTORY = "./uploaded_images"
 
@@ -36,7 +38,7 @@ def get_user(Authorization: str = Header(...)):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        select_query = "SELECT email, username, phone, image FROM Users WHERE email = ?"
+        select_query = "SELECT email, username, phone, image, department FROM Users WHERE email = ?"
         cursor.execute(select_query, (email,))
         row = cursor.fetchone()
 
@@ -48,7 +50,9 @@ def get_user(Authorization: str = Header(...)):
             "email": row[0],
             "username": row[1],
             "phone": row[2],
-            "image": row[3]
+            "image": row[3],
+            "department": row[4]
+
         }
 
         # Convert relative image path to base64
@@ -77,6 +81,8 @@ async def update_user_me(
     username: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),  # Adjusted to string
     file: Optional[UploadFile] = File(None),
+    department: Optional[str] = Form(None),  # Ajout du champ département
+
     Authorization: str = Header(...),
 ):
     if not Authorization.startswith("Bearer "):
@@ -117,6 +123,9 @@ async def update_user_me(
             values.append(username)
         if phone:
             update_fields.append("phone = ?")
+            values.append(phone)
+        if department:
+            update_fields.append("department = ?")
             values.append(phone)
 
         if not update_fields:

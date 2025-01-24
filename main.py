@@ -373,23 +373,21 @@ def log_alert(message):
 
 @app.get("/alerts/")
 def get_alerts(limit: int = 10, authorization: str = Header(None)):
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
-    
-    token = authorization.split(" ")[1]
-    verify_token(token)
-
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT * FROM alerts ORDER BY created_at DESC LIMIT %s", (limit,)
-        )
-        alerts = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return {"alerts": alerts}
-    except Error as e:
+     if not authorization:
+         raise HTTPException(status_code=401, detail="Authorization header missing")
+     token = authorization.split(" ")[1]
+     verify_token(token)
+     try:
+         conn = get_db_connection()
+         cursor = conn.cursor()
+         query = f"SELECT TOP {limit} * FROM alerts ORDER BY created_at DESC"
+         cursor.execute(query)
+         columns = [column[0] for column in cursor.description]
+         alerts = [dict(zip(columns, row)) for row in cursor.fetchall()] 
+         cursor.close()
+         conn.close() 
+         return {"alerts": alerts} 
+     except Exception as e:
         print(f"Erreur lors de la récupération des alertes : {e}")
         raise HTTPException(status_code=500, detail="Erreur de récupération des alertes")
 
@@ -576,7 +574,7 @@ def get_refusal_rate_per_issuer(authorization: str = Header(None)):
  
     # Ajouter les noms des banques à la réponse
     refusal_rate_with_names = {
-        bank_names.get(int(float(key)), f"Code inconnu ({key})"): value
+        bank_names.get(int(float(key)), f"Code({key})"): value
         for key, value in refusal_rate_per_issuer.items()
     }
  
@@ -595,10 +593,15 @@ def get_system_status(authorization: str = Header(None)):
     df = load_data()
     df = df.sort_values(by='DATETIME')
     df['TIME_DIFF'] = df['DATETIME'].diff().dt.total_seconds()
-    problematic_intervals = df[(df['TIME_DIFF'] == 30) | (df['TIME_DIFF'] == 60)]
+    problematic_intervals = df[(df['TIME_DIFF'] == 60) | (df['TIME_DIFF'] == 120)]
  
-    status = "Il y a un problème dans le système." if not problematic_intervals.empty else "Le système est disponible."
-    return {"system_status": status}
+    is_stable = problematic_intervals.empty  # True si stable, False sinon
+    status_message = "Le système est stable." if is_stable else "Il y a un problème dans le système."
+    
+    return {
+        "system_status": status_message,
+        "is_stable": is_stable  # Retourne un booléen pour faciliter la gestion dans le frontend
+    }
 
 @app.get("/transaction_trends/")
 def get_transaction_trends(authorization: str = Header(None)):
