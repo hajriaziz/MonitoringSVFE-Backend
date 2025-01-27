@@ -7,13 +7,10 @@ import json
 import smtplib
 from typing import List
 from fastapi import  FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from auth import router as auth_router
 from jwt_utils import verify_token
 import pandas as pd
-from mysql.connector import Error
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, time 
 import locale
 from user import router as user_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -237,7 +234,7 @@ def send_email_alert(body):
             except Exception as e:
                 print(f"Erreur lors de l'envoi")
 
-    except Error as e:
+    except locale.Error as e:
         print(f"Erreur lors de la récupération des emails : {e}")
 
 
@@ -260,18 +257,18 @@ async def check_and_send_alerts():
          # Vérification des alertes
          critical_response_codes = [802, 803, 910, 915]
  
-         if success_rate < 75:
+         if success_rate < 70:
              message = f"Alerte Critique: Le taux de reussite est tombe a {success_rate:.2f}%!"
              #await manager.broadcast(message)
              log_alert(message)
-             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
  
          if refusal_rate > 35:
              message = f"Alerte: Le taux de refus est eleve a {refusal_rate:.2f}%!"
              #await manager.broadcast(message)
              log_alert(message)
-             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
          if most_frequent_refusal_code in critical_response_codes:
              message = (
@@ -280,7 +277,7 @@ async def check_and_send_alerts():
              )
              #await manager.broadcast(message)
              log_alert(message)
-             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
              # Vérification des taux de refus par émetteur
          total_per_issuer = df['ISS_INST'].value_counts()
@@ -312,22 +309,20 @@ async def check_and_send_alerts():
                  + "\n".join(banks_below_threshold)
              )
              log_alert(message)
-             send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+             #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
 
         # Vérification des taux de refus par canal
-         refusal_by_channel = df[df['RESP'] != -1].groupby('TERMINAL_TYPE').size().to_dict()
+         transactions_by_terminal = df.groupby('TERMINAL_TYPE').agg(
+                total_transactions=('TERMINAL_TYPE', 'size'),
+                successful_transactions=('SUCCESS', 'sum'),
+                refused_transactions=('RESP', lambda x: (x != -1).sum())
+            ).to_dict(orient='index')
+            
+            # Calcul des taux de refus par canal
          refusal_rate_by_channel = {
-                channel: round((refusals / total_transactions) * 100, 2)
-                for channel, refusals in refusal_by_channel.items()
+                terminal: round((data['refused_transactions'] / data['total_transactions']) * 100, 2)
+                for terminal, data in transactions_by_terminal.items()
             }
- 
-            # Ajouter une alerte spécifique pour DAB (Terminal "1")
-         #dab_refusal_rate = refusal_rate_by_channel.get(1, 0.0)
-         #if dab_refusal_rate > 30:
-                #message = f"Alerte Critique: Le taux de refus pour le canal DAB est très élevé ({dab_refusal_rate:.2f}%)!"
-                #log_alert(message)
-                # send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
-                #print(message)
                         # Dictionnaire pour mapper les canaux à leurs noms
          channel_names = {
             1: "DAB",
@@ -342,8 +337,7 @@ async def check_and_send_alerts():
                 message = f"Alerte: Le taux de refus pour le canal {channel_name} est élevé ({rate:.2f}%)!"
                 log_alert(message)
                 # Envoyer l'alerte par email
-                send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
-                print(message)
+                #send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
      except Exception as e:
          print(f"Erreur lors de la vérification des alertes : {e}")
@@ -368,7 +362,7 @@ def log_alert(message):
         conn.close()
         #print(f"Broadcasting message: {message}")
 
-    except Error as e:
+    except locale.Error as e:
         print(f"Erreur lors de l'enregistrement de l'alerte : {e}")
 
 @app.get("/alerts/")
@@ -534,17 +528,24 @@ def get_terminal_distribution(authorization: str = Header(None)):
     first_date_time = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce').min()
     formatted_datetime = first_date_time.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(first_date_time) else 'N/A'
  
-    # Calcul des taux de refus par canal
+    # Calcul des transactions autorisées et refusées par terminal
     total_transactions = len(df)
-    refusal_by_channel = df[df['RESP'] != -1].groupby('TERMINAL_TYPE').size().to_dict()
+    transactions_by_terminal = df.groupby('TERMINAL_TYPE').agg(
+        total_transactions=('TERMINAL_TYPE', 'size'),
+        successful_transactions=('SUCCESS', 'sum'),
+        refused_transactions=('RESP', lambda x: (x != -1).sum())
+    ).to_dict(orient='index')
+    
+    # Calcul des taux de refus par canal
     refusal_rate_by_channel = {
-        channel: round((refusals / total_transactions) * 100, 2)
-        for channel, refusals in refusal_by_channel.items()
+        terminal: round((data['refused_transactions'] / data['total_transactions']) * 100, 2)
+        for terminal, data in transactions_by_terminal.items()
     }
- 
+    
     return {
-        "terminal_distribution": terminal_distribution,
         "latest_update": formatted_datetime,
+        "total_transactions": total_transactions,
+        "transactions_by_terminal": transactions_by_terminal,
         "refusal_rate_by_channel": refusal_rate_by_channel
     }
  
@@ -574,7 +575,7 @@ def get_refusal_rate_per_issuer(authorization: str = Header(None)):
  
     # Ajouter les noms des banques à la réponse
     refusal_rate_with_names = {
-        bank_names.get(int(float(key)), f"Code({key})"): value
+        bank_names.get(int(float(key)), f"Cod({key})"): value
         for key, value in refusal_rate_per_issuer.items()
     }
  
