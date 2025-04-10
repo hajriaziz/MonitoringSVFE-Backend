@@ -4,8 +4,13 @@ from pydantic import BaseModel
 import bcrypt
 from jwt_utils import create_access_token
 import pyodbc
+import logging
 
 router = APIRouter()
+# 🔹 Configuration du logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
 
 # Configuration base de données
 def get_db_connection():
@@ -80,7 +85,16 @@ def sign_up(user: User):
 @router.post("/signin/")
 def sign_in(user: User):
     db_user = get_user_from_db(user.email)
+    
     if db_user and verify_password(user.password, db_user["password_hash"]):
         token = create_access_token(data={"sub": user.email})
+        
+        # 🔹 Log de la connexion réussie
+        logger.info(f"✅ Connexion réussie pour l'utilisateur : {user.email}")
+        
         return {"access_token": token, "token_type": "bearer"}
-    raise HTTPException(status_code=401, detail="Email ou mot de passe invalide")
+    
+    # 🔹 Log de la tentative de connexion échouée
+    logger.warning(f"❌ Tentative de connexion échouée pour : {user.email}")
+    
+    raise HTTPException(status_code=401, detail="Invalid email or password")

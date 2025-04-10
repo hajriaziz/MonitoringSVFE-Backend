@@ -126,7 +126,7 @@ async def update_user_me(
             values.append(phone)
         if department:
             update_fields.append("department = ?")
-            values.append(phone)
+            values.append(department)
 
         if not update_fields:
             raise HTTPException(status_code=400, detail="No data provided for update")

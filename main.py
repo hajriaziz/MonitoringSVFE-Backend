@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import pyodbc
 from contextlib import asynccontextmanager
 from email.mime.multipart import MIMEMultipart
@@ -17,7 +18,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Scheduler pour les alertes
 scheduler = AsyncIOScheduler()
-
+# Réduire les logs de APScheduler au niveau WARNING
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 # Define the lifespan_events function first
 @asynccontextmanager
 async def lifespan_events(app: FastAPI):
@@ -255,25 +257,24 @@ async def check_and_send_alerts():
          most_frequent_refusal_count = response_distribution.max() if not response_distribution.empty else 0
  
          # Vérification des alertes
-         critical_response_codes = [802, 803, 910, 915]
+         critical_response_codes = [802, 803, 801, 840]
  
          if success_rate < 70:
-             message = f"Alerte Critique: Le taux de reussite est tombe a {success_rate:.2f}%!"
+             message = f"🔴 Alerte Critique : Diminution significative du taux de réussite — seulement {success_rate:.2f} %."
              #await manager.broadcast(message)
              log_alert(message)
              #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
  
          if refusal_rate > 35:
-             message = f"Alerte: Le taux de refus est eleve a {refusal_rate:.2f}%!"
+             message = f"🟠 Alerte : Le taux de refus a atteint {refusal_rate:.2f}%!"
              #await manager.broadcast(message)
              log_alert(message)
              #send_email_alert(f"{message}\n\n""Merci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
          if most_frequent_refusal_code in critical_response_codes:
              message = (
-                 f"Alerte Critique: Code de refus frequent {most_frequent_refusal_code} "
-                 f"avec {most_frequent_refusal_count} occurrences!"
+                f"🔴 Alerte Critique : Le code de refus '{most_frequent_refusal_code}' est récurrent, détecté {most_frequent_refusal_count} fois."
              )
              #await manager.broadcast(message)
              log_alert(message)
@@ -286,26 +287,39 @@ async def check_and_send_alerts():
          refusal_rate_per_issuer = (refused_per_issuer / total_per_issuer * 100).fillna(0).round(2).to_dict()
  
          # Dictionnaire pour mapper les codes des banques avec leurs noms
-         bank_names = {
-             103: "BNA", 105: "BT", 110: "STB", 9110: "STBNet", 9108: "BIAT", 125: "ZITOUNA",
+         '''bank_names = {
+             103: "BNA", 105: "BT", 110: "STB", 9110: "STBNet", 9108: "BIAT", 125: "ZITOUNA", 
              132: "ALBARAKA", 150: "BCT", 9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI",
-             9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK", 9121: "STUSID", 123: "QNB",
-             9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB",
-            173: "TIB", 140: "ABCI", 141: "BDL", 112: "UIB", 142: "BEA", 144: "BBA", 148: "BARKAA",
-             149: "SGA", 143: "LIB", 177: "BNAlgrie", 178: "SALAMB", 9996: "AMEXGA", 9995: "VISASMSGA",
-             9944: "MCSMSGA", 9997: "VISAGA", 9990: "BCD", 9992: "MCGA", 9968: "9968", 9145: "9145",
+             9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK", 9121: "STUSID", 123: "QNB", 
+             9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB", 
+             173: "TIB", 140: "ABCI", 141: "BDL", 112: "UIB", 142: "BEA", 144: "BBA", 148: "BARKAA", 
+             149: "SGA", 143: "LIB", 177: "BNAlgrie", 178: "SALAMB", 9996: "AMEXGA", 9995: "VISASMSGA", 
+             9944: "MCSMSGA", 9997: "VISAGA", 9990: "BCD", 9992: "MCGA", 9968: "9968", 9145: "9145", 
              198: "198",
+         }'''
+         bank_names = {
+         103: "BNA", 105: "BT", 9110: "STB", 9108: "BIAT", 125: "ZITOUNA", 132: "ALBARAKA", 150: "BCT",
+         9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI", 9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK",
+         9121: "STUSID", 123: "QNB", 9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB", 
+         173: "TIB", 140: "ABCI", 112: "UIB"
+        }   
+
+         # Filtrer les banques pour ne garder que celles présentes dans le dictionnaire
+         filtered_refusal_rate = {
+             bank_names[int(float(key))]: value
+             for key, value in refusal_rate_per_issuer.items()
+             if int(float(key)) in bank_names
          }
- 
-         # Liste des banques avec un taux de refus inférieur à 70 %
+
+         # Liste des banques avec un taux de refus supérieur à 70 %
          banks_below_threshold = [
-             f"{bank_names.get(int(float(issuer_code)), f'Code inconnu ({issuer_code})')} ({rate:.2f}%)"
-             for issuer_code, rate in refusal_rate_per_issuer.items() if rate > 70
+             f"{bank} ({rate:.2f}%)"
+             for bank, rate in filtered_refusal_rate.items() if rate > 70
          ]
- 
+
          if banks_below_threshold:
              message = (
-                 "Alerte: Les banques emettrices suivantes ont un taux de refus superieur à 70% :\n"
+                 "🟠 Alerte : Certaines banques émettrices présentent un taux de refus supérieur à 70 % :\n"
                  + "\n".join(banks_below_threshold)
              )
              log_alert(message)
@@ -332,13 +346,33 @@ async def check_and_send_alerts():
  
         # Vérification des taux de refus par canal et envoi d'alertes
          for channel, rate in refusal_rate_by_channel.items():
-            if rate > 60:  # Seuil générique
-                channel_name = channel_names.get(channel, f"Canal inconnu ({channel})")
-                message = f"Alerte: Le taux de refus pour le canal {channel_name} est élevé ({rate:.2f}%)!"
+             if channel not in channel_names:  # Ignorer les canaux non définis
+              continue
+
+             if rate > 60:  # Seuil générique
+                channel_name = channel_names[channel]
+                message = f"🟠 Alerte : Le taux de refus est élevé sur le canal {channel_name} est élevé ({rate:.2f}%)!"
                 log_alert(message)
                 # Envoyer l'alerte par email
                 #send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
- 
+        
+        # Convertir les valeurs en entiers pour éviter les problèmes de type
+         df['TERMINAL_TYPE'] = df['TERMINAL_TYPE'].astype(int)
+        # Liste des types de terminaux attendus
+         expected_terminal_types = set(channel_names.keys())
+
+        # Types de terminaux réellement présents dans les transactions
+         actual_terminal_types = set(df['TERMINAL_TYPE'].unique())
+
+        # Déterminer les terminaux absents
+         missing_terminal_types = expected_terminal_types - actual_terminal_types
+
+        # Envoyer une alerte pour chaque type de terminal absent
+         for terminal in missing_terminal_types:
+             channel_name = channel_names.get(terminal, f"Type inconnu ({terminal})")
+             message = f"🟠 Alerte : Aucune transaction n’a été détectée sur le canal {channel_name}!"
+             log_alert(message)
+             #send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
      except Exception as e:
          print(f"Erreur lors de la vérification des alertes : {e}")
 
@@ -366,7 +400,7 @@ def log_alert(message):
         print(f"Erreur lors de l'enregistrement de l'alerte : {e}")
 
 @app.get("/alerts/")
-def get_alerts(limit: int = 10, authorization: str = Header(None)):
+def get_alerts(limit: int = 20, authorization: str = Header(None)):
      if not authorization:
          raise HTTPException(status_code=401, detail="Authorization header missing")
      token = authorization.split(" ")[1]
@@ -567,19 +601,22 @@ def get_refusal_rate_per_issuer(authorization: str = Header(None)):
  
     # Dictionnaire pour mapper les codes des banques avec leurs noms
     bank_names = {
-        103: "BNA",105: "BT",110: "STB",9110: "STBNet",9108: "BIAT",125: "ZITOUNA",132: "ALBARAKA",150:"BCT",9101:"ATB",9104:"ABT", 9107:"AmenB",9111:"UBCI",
-        9112:"UIB",9114:"BH",9117:"ONP",9120:"BTK",9121:"STUSID",123:"QNB",9124:"BTE",9126:"BTL",127:"BTS",9128:"ABC",133:"NAIB",147:"WIFAKB",173:"TIB",
-        140:"ABCI",141:"BDL",112:"UIB",142:"BEA",144:"BBA",148:"BARKAA",149:"SGA",143:"LIB",177:"BNAlgrie",178:"SALAMB",9996: "AMEXGA",9995: "VISASMSGA",9944: "MCSMSGA",
-        9997: "VISAGA",9990: "BCD",9992: "MCGA",9968: "9968",9145: "9145",198: "198",
-    }  
- 
-    # Ajouter les noms des banques à la réponse
-    refusal_rate_with_names = {
-        bank_names.get(int(float(key)), f"Cod({key})"): value
+        103: "BNA", 105: "BT", 9110: "STB", 9108: "BIAT", 125: "ZITOUNA", 132: "ALBARAKA", 150: "BCT",
+        9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI", 9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK",
+        9121: "STUSID", 123: "QNB", 9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB", 
+        173: "TIB", 140: "ABCI", 112: "UIB"
+    }   
+
+    # Filtrer les banques pour ne garder que celles dans le dictionnaire
+    filtered_refusal_rate = {
+        bank_names[int(float(key))]: value
         for key, value in refusal_rate_per_issuer.items()
+        if int(float(key)) in bank_names
     }
- 
-    return {"refusal_rate_per_issuer": refusal_rate_with_names}
+
+    return {"refusal_rate_per_issuer": filtered_refusal_rate}
+
+
 
  
 # Protected route: Check system status
@@ -597,7 +634,7 @@ def get_system_status(authorization: str = Header(None)):
     problematic_intervals = df[(df['TIME_DIFF'] == 60) | (df['TIME_DIFF'] == 120)]
  
     is_stable = problematic_intervals.empty  # True si stable, False sinon
-    status_message = "Le système est stable." if is_stable else "Il y a un problème dans le système."
+    status_message = "Le système est acitf." if is_stable else "Le système est inactif"
     
     return {
         "system_status": status_message,
