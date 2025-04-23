@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import pyodbc
 from contextlib import asynccontextmanager
@@ -27,7 +28,7 @@ async def lifespan_events(app: FastAPI):
     print("Application startup")
     asyncio.create_task(schedule_async_job()) 
     yield  # This part indicates the running of the application
-    # Shutdown code
+    # Shutdown cod0
     print("Application shutdown")
     scheduler.shutdown(wait=False)
 
@@ -245,6 +246,45 @@ async def check_and_send_alerts():
      try:
         # Charger les données pour vérifier les KPIs
          df = load_data()
+    # --- Vérification de la fraîcheur des données ---
+         now = datetime.now()
+         formatted_last_update = None
+         delay_minutes = None
+         is_data_fresh = False
+
+         try:
+            # Convertir UDATE en chaîne 'YYYYMMDD'
+            df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
+
+            # Convertir TIME au format HHMMSS si c’est un timedelta
+            df['TIME'] = df['TIME'].apply(
+                lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" 
+                if pd.notnull(x) and hasattr(x, 'components') else '000000'
+            )
+
+            # Concaténer UDATE + TIME et convertir en datetime
+            datetime_series = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce')
+            last_update = datetime_series.max()
+
+            if pd.notnull(last_update):
+                last_update = last_update.to_pydatetime()
+                delay_minutes = round((now - last_update).total_seconds() / 60, 2)
+                is_data_fresh = delay_minutes <= 15  # Seuil de 15 minutes
+                formatted_last_update = last_update.strftime('%Y-%m-%d %H:%M:%S')
+
+                # Alerte si les données ne sont pas fraîches
+                if not is_data_fresh:
+                    message = (
+                        f"🔴 Alerte Critique : Les données ne sont pas à jour. "
+                        f"Dernière mise à jour : {formatted_last_update}, délai : {delay_minutes} minutes."
+                    )
+                    log_alert(message)
+                    # send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
+         except Exception as e:
+                        print("Erreur lors du traitement de la fraîcheur des données :", str(e))
+                        message = "🔴 Alerte Critique : Erreur lors de la vérification de la fraîcheur des données."
+                        log_alert(message)
+                        # send_email_alert(f"{message}\n\nMerci de vérifier l'état du système à partir de l'application SMTMonitoring.")
  
          total_transactions = len(df)
          successful_transactions = df['SUCCESS'].sum()
@@ -588,33 +628,48 @@ def get_terminal_distribution(authorization: str = Header(None)):
 def get_refusal_rate_per_issuer(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
-   
+
     token = authorization.split(" ")[1]
     verify_token(token)
- 
+
     df = load_data()
     total_per_issuer = df['ISS_INST'].value_counts()
     refused_per_issuer = df[(df['RESP'] != -1) & (df['RESP'] != 0)]['ISS_INST'].value_counts()
- 
-    # Calculer le taux de refus
+
     refusal_rate_per_issuer = (refused_per_issuer / total_per_issuer * 100).fillna(0).round(2).to_dict()
- 
-    # Dictionnaire pour mapper les codes des banques avec leurs noms
+
+    # Dictionnaire des banques nationales
     bank_names = {
         103: "BNA", 105: "BT", 9110: "STB", 9108: "BIAT", 125: "ZITOUNA", 132: "ALBARAKA", 150: "BCT",
-        9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI", 9112: "UIB", 9114: "BH", 9117: "ONP", 9120: "BTK",
-        9121: "STUSID", 123: "QNB", 9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC", 133: "NAIB", 147: "WIFAKB", 
-        173: "TIB", 140: "ABCI", 112: "UIB"
-    }   
+        9101: "ATB", 9104: "ABT", 9107: "AmenB", 9111: "UBCI", 9112: "UIB", 9114: "BH", 9117: "ONP",
+        9120: "BTK", 9121: "STUSID", 123: "QNB", 9124: "BTE", 9126: "BTL", 127: "BTS", 9128: "ABC",
+        133: "NAIB", 147: "WIFAKB", 173: "TIB", 140: "ABCI", 112: "UIB"
+    }
 
-    # Filtrer les banques pour ne garder que celles dans le dictionnaire
-    filtered_refusal_rate = {
+    # Dictionnaire des banques étrangères
+    foreign_bank_names = { 141: "BDL", 142: "BEA", 144: "BBA", 148: "BARKAA", 149: "SGA", 
+                          143: "LIB", 177: "BNAlgrie", 178: "SALAMB", 9996: "AMEXGA",9995:"VISASMSGA",
+                          9944: "MCSMSGA", 9997: "VISAGA", 9990: "BCD", 9992: "MCGA", 
+                            9968: "9968", 9145: "9145", 198: "198",}
+
+    # Banques nationales
+    national_banks = {
         bank_names[int(float(key))]: value
         for key, value in refusal_rate_per_issuer.items()
         if int(float(key)) in bank_names
     }
 
-    return {"refusal_rate_per_issuer": filtered_refusal_rate}
+    # Banques étrangères
+    foreign_banks = {
+        foreign_bank_names.get(int(float(key)), f"Code inconnu ({int(float(key))})"): value
+        for key, value in refusal_rate_per_issuer.items()
+        if int(float(key)) not in bank_names
+    }
+
+    return {
+        "national_banks": national_banks,
+        "foreign_banks": foreign_banks
+    }
 
 
 
@@ -629,16 +684,51 @@ def get_system_status(authorization: str = Header(None)):
     verify_token(token)
  
     df = load_data()
+
+    # --- Vérification de stabilité du système ---
     df = df.sort_values(by='DATETIME')
     df['TIME_DIFF'] = df['DATETIME'].diff().dt.total_seconds()
     problematic_intervals = df[(df['TIME_DIFF'] == 60) | (df['TIME_DIFF'] == 120)]
- 
-    is_stable = problematic_intervals.empty  # True si stable, False sinon
+    is_stable = problematic_intervals.empty
     status_message = "Le système est acitf." if is_stable else "Le système est inactif"
-    
+
+    # --- Vérification de la fraîcheur des données ---
+    now = datetime.now()
+    formatted_last_update = None
+    delay_minutes = None
+    is_data_fresh = False
+
+    try:
+        # Convertir UDATE en chaîne 'YYYYMMDD'
+        df['UDATE'] = pd.to_datetime(df['UDATE'], errors='coerce').dt.strftime('%Y%m%d')
+
+        # Convertir TIME au format HHMMSS si c’est un timedelta
+        df['TIME'] = df['TIME'].apply(
+            lambda x: f"{x.components.hours:02}{x.components.minutes:02}{x.components.seconds:02}" 
+            if pd.notnull(x) and hasattr(x, 'components') else '000000'
+        )
+
+        # Concaténer UDATE + TIME et convertir en datetime
+        datetime_series = pd.to_datetime(df['UDATE'] + df['TIME'], format='%Y%m%d%H%M%S', errors='coerce')
+        last_update = datetime_series.max()
+
+        if pd.notnull(last_update):
+            last_update = last_update.to_pydatetime()
+            delay_minutes = round((now - last_update).total_seconds() / 60, 2)
+            is_data_fresh = delay_minutes <= 15
+            formatted_last_update = last_update.strftime('%Y-%m-%d %H:%M:%S')
+
+    except Exception as e:
+        print("Erreur lors du traitement de la fraîcheur des données :", str(e))
+        # On garde les valeurs par défaut (None / False)
+
+    # --- Réponse ---
     return {
         "system_status": status_message,
-        "is_stable": is_stable  # Retourne un booléen pour faciliter la gestion dans le frontend
+        "is_stable": is_stable,
+        "is_data_fresh": is_data_fresh,
+        "last_update": formatted_last_update,
+        "delay_minutes": delay_minutes
     }
 
 @app.get("/transaction_trends/")
